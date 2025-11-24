@@ -20,6 +20,7 @@ class Tenant(Base):
 
     campaigns = relationship("Campaign", back_populates="tenant", cascade="all, delete-orphan")
     subscribers = relationship("Subscriber", back_populates="tenant", cascade="all, delete-orphan")
+    suppressed_emails = relationship("SuppressedEmail", back_populates="tenant", cascade="all, delete-orphan")
 
 
 class Campaign(Base):
@@ -65,3 +66,15 @@ class EmailLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     campaign = relationship("Campaign", back_populates="email_logs")
+
+
+class SuppressedEmail(Base):
+    __tablename__ = "suppressed_emails"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    email = Column(String(320), nullable=False, index=True)
+    reason = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    tenant = relationship("Tenant", back_populates="suppressed_emails")
