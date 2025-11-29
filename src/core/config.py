@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     app_name: str = "CourierX"
     environment: str = "development"
     api_version: str = "v1"
-    database_url: str = "sqlite:///./data/email_delivery.db"
+    database_url: str = "postgresql+psycopg://user:password@host:5432/database"
     redis_url: str = "redis://localhost:6379/0"
     aws_access_key_id: str = "AWS_ACCESS_KEY_ID_PLACEHOLDER"
     aws_secret_access_key: str = "AWS_SECRET_ACCESS_KEY_PLACEHOLDER"
@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 120
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def strip_wrapping_quotes(cls, value: str) -> str:
+        """Allow quoted URLs in env files."""
+        if isinstance(value, str):
+            return value.strip().strip('"').strip("'")
+        return value
 
     @field_validator("allowed_origins", mode="before")
     @classmethod

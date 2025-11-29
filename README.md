@@ -4,6 +4,12 @@ Production-ready FastAPI backend scaffold for a multi-tenant email delivery plat
 
 This document is intentionally verbose and comprehensive. It is a practical runbook that explains what the system does, how to run it locally, how to deploy it to AWS, and how to operate and extend it safely.
 
+## System Verification (Completed)
+- Neon PostgreSQL configured; Alembic migrations applied successfully (PostgresqlImpl) and tables exist: tenants, campaigns, subscribers, email_logs, suppressed_emails, alembic_version.
+- Redis running locally; RQ worker starts (`Worker rq:worker:... started`, `Listening on emails…`, `Cleaning registries for queue: emails`).
+- Queued send-test works end-to-end: `POST /send/send-test` with `"enqueue": true` returns a valid job ID (e.g., `b1a6f92b-ac77-440d-87bc-2cda672a5ada`).
+- Worker processes queued jobs via AWS SES (sandbox recipient limits apply).
+
 ## Table of Contents
 - [Features](#features)
 - [Architecture](#architecture)
@@ -62,14 +68,17 @@ Copy `.env.example` to `.env` and set:
 - `APP_NAME` – display name in OpenAPI docs (default CourierX)
 - `ENVIRONMENT` – development/staging/production
 - `API_VERSION` – API version string
-- `DATABASE_URL` – e.g., `sqlite:///./data/email_delivery.db` (dev) or `postgresql+psycopg://user:pass@host:5432/email_delivery`
+- `DATABASE_URL` – required; e.g., your Neon URL `postgresql+psycopg://...` (quoted values are stripped automatically; keep `sslmode=require`)
 - `REDIS_URL` – e.g., `redis://localhost:6379/0` or ElastiCache endpoint
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION_NAME` – IAM user/role with SES permissions
-- `SES_SENDER_EMAIL` – verified sender in SES
+- `SES_SENDER_EMAIL` – verified sender in SES (e.g., `no-reply@chachamailer.com`)
 - `ALLOWED_ORIGINS` – comma-separated CORS origins
 - `RATE_LIMIT_PER_MINUTE` – simple in-memory rate limit for the send-test endpoint
 
-Tip: In production, prefer AWS Secrets Manager or SSM Parameter Store and inject via task definitions/EB env vars rather than shipping a `.env`.
+Notes:
+- No SQLite fallback remains; a valid PostgreSQL URL is required.
+- Quoted URLs in `.env` are handled by config.
+- In production, prefer AWS Secrets Manager or SSM Parameter Store and inject via task definitions/EB env vars rather than shipping a `.env`.
 
 ## Local Development
 1) **Install deps**
@@ -93,10 +102,11 @@ The app will auto-create tables for quick prototyping if migrations aren’t app
 4) **Run services**
 ```bash
 uvicorn src.api.app:app --reload
-python -m src.queue.worker  # in a separate terminal
+python3 -m src.queue.worker  # in a separate terminal (requires Redis)
 # optional scheduler
 # python -m src.queue.scheduler
 ```
+Redis options: `brew install redis && brew services start redis`, or run a container `docker run --name redis -p 6379:6379 -d redis:7`.
 
 5) **Run tests**
 ```bash
@@ -111,6 +121,8 @@ alembic upgrade head
 ```
 - The template lives at `alembic/script.py.mako`. Metadata is pulled from `src.db.models.Base`.
 - Keep migrations committed so environments stay in sync. On first deploy, run `alembic upgrade head` against your target DB (ECS task, EB app, etc.).
+- Alembic reads `settings.database_url`, so it will target the same Neon/PostgreSQL database as the app.
+- Status: confirmed working against Neon (PostgresqlImpl) with all revisions applied and tables present.
 
 ## Running the Stack
 - **API**: `uvicorn src.api.app:app --reload`
@@ -123,6 +135,7 @@ alembic upgrade head
 - **Single send**: `/send/send-test` can enqueue if `"enqueue": true`; worker executes `process_email_job`.
 - **Campaign send**: `/campaigns/{id}/send-now` runs synchronously; `/admin/enqueue-campaign/{id}` enqueues `_run_campaign_job` via RQ. Worker pulls from the default `emails` queue.
 - **EmailLog**: Each enqueued campaign email inserts a log with `status="queued"` and the RQ job ID as `message_id`. SNS events can update status to bounced/complaint/delivered.
+- End-to-end verified: queued send-test returns a job ID and the running worker processes it successfully via SES (sandbox rules apply).
 
 ## API Surface
 - Tenants: `POST/GET/LIST/PATCH/DELETE /tenants`
@@ -139,9 +152,10 @@ alembic upgrade head
 ## Email Flow
 1. Client calls `/send/send-test` or campaign send endpoints.
 2. If enqueued, RQ job dispatches `SESService.send_email`.
-3. SES returns `MessageId`; stored in `EmailLog`.
-4. SNS notifications (bounce/complaint) call `/events/sns` and update `EmailLog.status`.
-5. Suppressed emails are excluded from campaign sends.
+3. Worker picks up the queued job from Redis and calls SES.
+4. SES returns `MessageId`; stored in `EmailLog`.
+5. SNS notifications (bounce/complaint) call `/events/sns` and update `EmailLog.status`.
+6. Suppressed emails are excluded from campaign sends.
 
 ## Domain Verification Flow
 1. `POST /domains/request-verification` returns SES-style TXT/CNAME records.

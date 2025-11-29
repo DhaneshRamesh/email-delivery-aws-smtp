@@ -14,12 +14,15 @@ from src.core.config import settings
 # The engine is created once and reused for all requests.
 db_url = make_url(settings.database_url)
 connect_args = {}
-if db_url.drivername.startswith("sqlite"):
-    if db_url.database:
-        Path(db_url.database).parent.mkdir(parents=True, exist_ok=True)
-    connect_args["check_same_thread"] = False
+if db_url.drivername.startswith("postgresql+psycopg"):
+    connect_args["sslmode"] = "require"
 
-engine = create_engine(settings.database_url, pool_pre_ping=True, connect_args=connect_args)
+engine = create_engine(
+    settings.database_url,
+    future=True,
+    pool_pre_ping=True,
+    connect_args=connect_args,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
