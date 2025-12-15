@@ -37,12 +37,15 @@ class SESService:
         if self._client is None:
             if boto3 is None:  # pragma: no cover - dependency notice
                 raise RuntimeError("boto3 is required for SES operations. Install project dependencies.")
-            self._client = boto3.client(
-                "ses",
-                region_name=self.region_name,
-                aws_access_key_id=self.aws_access_key_id,
-                aws_secret_access_key=self.aws_secret_access_key,
-            )
+            if not self.region_name:
+                raise RuntimeError("AWS region is required for SES. Set AWS_REGION_NAME in the environment.")
+
+            client_kwargs = {"region_name": self.region_name}
+            if self.aws_access_key_id and self.aws_secret_access_key:
+                client_kwargs["aws_access_key_id"] = self.aws_access_key_id
+                client_kwargs["aws_secret_access_key"] = self.aws_secret_access_key
+
+            self._client = boto3.client("ses", **client_kwargs)
         return self._client
 
     def send_email(

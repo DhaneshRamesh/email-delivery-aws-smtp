@@ -1,6 +1,8 @@
 """RQ worker that delivers outbound emails via SES."""
 from __future__ import annotations
 
+import os
+import sys
 from typing import Any
 
 try:  # pragma: no cover - optional dependency import
@@ -57,6 +59,17 @@ def enqueue_email_job(*, subject: str, recipient: str, body: str):
 
 def run_worker() -> None:
     """Entry point called by `python -m src.queue.worker`."""
+
+    if (
+        settings.environment == "development"
+        and sys.platform == "darwin"
+        and not os.environ.get("OBJC_DISABLE_INITIALIZE_FORK_SAFETY")
+    ):
+        logger.warning(
+            "OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES is recommended on macOS to avoid fork-related crashes with RQ workers. "
+            "Applying it for this process."
+        )
+        os.environ["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
 
     queue = _get_queue()
     connection = queue.connection

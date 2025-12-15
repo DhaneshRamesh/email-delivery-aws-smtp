@@ -70,7 +70,8 @@ Copy `.env.example` to `.env` and set:
 - `API_VERSION` – API version string
 - `DATABASE_URL` – required; e.g., your Neon URL `postgresql+psycopg://...` (quoted values are stripped automatically; keep `sslmode=require`)
 - `REDIS_URL` – e.g., `redis://localhost:6379/0` or ElastiCache endpoint
-- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION_NAME` – IAM user/role with SES permissions
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` – optional for local dev; omit in ECS/Lambda when using IAM roles
+- `AWS_REGION_NAME` – required region for SES (e.g., `us-east-1`)
 - `SES_SENDER_EMAIL` – verified sender in SES (e.g., `no-reply@chachamailer.com`)
 - `ALLOWED_ORIGINS` – comma-separated CORS origins
 - `RATE_LIMIT_PER_MINUTE` – simple in-memory rate limit for the send-test endpoint
@@ -79,6 +80,7 @@ Notes:
 - No SQLite fallback remains; a valid PostgreSQL URL is required.
 - Quoted URLs in `.env` are handled by config.
 - In production, prefer AWS Secrets Manager or SSM Parameter Store and inject via task definitions/EB env vars rather than shipping a `.env`.
+- For ECS/EC2/Lambda with an IAM role, leave `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` unset so boto3 uses the role automatically.
 
 ## Local Development
 1) **Install deps**
@@ -92,6 +94,20 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 Update DB/Redis/AWS values as needed.
+
+### Local AWS/SES setup
+- Local testing works if either (a) AWS credentials are present in `.env` or (b) the AWS CLI is configured via `aws configure`. Do not leave empty `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` entries; blank values override boto3's provider chain.
+- Ensure `AWS_REGION_NAME` matches your verified SES identities; for this project use `ap-southeast-2` (Sydney).
+
+### Local SES Authentication (Required)
+- When running locally (outside AWS), boto3 needs credentials from either `.env` (`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`) or the AWS CLI (`aws configure`). If neither is set, SES calls will fail with `InvalidClientTokenId`.
+- This does not apply to ECS/Lambda, where IAM roles supply credentials automatically; do not set static keys there.
+- Example `.env` snippet for local testing:
+```
+AWS_ACCESS_KEY_ID=AKIAxxxxxxxxxxxx
+AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxxxxxxxxxx
+AWS_REGION_NAME=ap-southeast-2
+```
 
 3) **Apply migrations**
 ```bash
@@ -112,6 +128,22 @@ Redis options: `brew install redis && brew services start redis`, or run a conta
 ```bash
 pytest
 ```
+
+### Local validation checklist
+- Redis running locally (`redis-cli ping` → PONG).
+- `.env` present with `AWS_REGION_NAME=ap-southeast-2` and optional AWS credentials removed if unused.
+- API and worker start without errors (`uvicorn ...` and `python -m src.queue.worker`).
+- `/send/send-test` with `{"enqueue": true}` returns a job ID and the worker logs a send attempt.
+
+## macOS Local Development (RQ Worker)
+- On macOS, Python's fork plus Objective-C frameworks can crash RQ workers with `objc: initialize may have been in progress in another thread when fork() was called`.
+- Workaround (macOS-only): set `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` before starting the worker.
+- Example:
+```bash
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+python3 -m src.queue.worker
+```
+- This is not required in ECS/production (Linux).
 
 ## Migrations
 - Autogenerate a new migration after model changes:
@@ -198,7 +230,7 @@ Workflow: `.github/workflows/docker-deploy.yml`
   - `AWS_ACCESS_KEY_ID`
   - `AWS_SECRET_ACCESS_KEY`
   - (Optionally use OIDC + IAM role instead of static keys)
-- Update `AWS_REGION`, `ECR_REPOSITORY`, `ECS_CLUSTER`, `ECS_SERVICE` envs as needed.
+- Update `AWS_REGION`, `ECR_REPOSITORY`, `ECS_CLUSTER`, `ECS_SERVICE` envs as needed. For this repo use `ap-southeast-2` (Sydney) for SES/ECS/SSM.
 
 ## AWS Deployment Guide
 1) **Provision resources**
@@ -224,6 +256,29 @@ Workflow: `.github/workflows/docker-deploy.yml`
    - Expose API via ALB with HTTPS; allow SNS to reach `/events/sns`
 7) **IAM**
    - Task role with SES send permissions; least privilege to SNS if posting; CloudWatch logs
+
+## Production on ECS (Fargate)
+- Use two task definitions (see `deploy/ecs/taskdef-api.json` and `deploy/ecs/taskdef-worker.json`): API runs uvicorn; worker runs `python -m src.queue.worker`. Each task definition uses its own Task Role (e.g., backend-role vs worker-role). Region: `ap-southeast-2`.
+- Task Execution Role: only for ECR image pulls and CloudWatch Logs. Task Role: runtime permissions (SES, SNS, etc.). Do not grant app permissions to the execution role.
+- Credentials: do **not** set `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in ECS; rely on the Task Role so boto3 uses the default credential provider chain.
+- Required env (both containers): `APP_NAME`, `ENVIRONMENT`, `API_VERSION`, `AWS_REGION_NAME=ap-southeast-2`, `DATABASE_URL` (secret), `REDIS_URL` (secret), `SES_SENDER_EMAIL` (secret/parameter). API-only extras: `ALLOWED_ORIGINS`, `RATE_LIMIT_PER_MINUTE` as needed.
+- Secrets: place sensitive values in Secrets Manager or SSM Parameter Store and reference them via `secrets` entries in the task definitions (paths like `/email-delivery/DATABASE_URL` in ap-southeast-2). Non-secret config can use plain `environment` entries.
+- Logging: configure awslogs per the templates, ensure the log groups exist in ap-southeast-2, and point services to them.
+
+## Minimal IAM permissions
+- Task Execution Role: ECR pull (ecr:GetAuthorizationToken, ecr:BatchCheckLayerAvailability, ecr:GetDownloadUrlForLayer, ecr:BatchGetImage), CloudWatch Logs (logs:CreateLogStream/PutLogEvents), and if using SSM/Secrets in `secrets`, allow ssm:GetParameters / secretsmanager:GetSecretValue and kms:Decrypt for the CMK used.
+- backend-role (API Task Role): CloudWatch Logs write, SSM read for config (and kms:Decrypt if CMK), optional SES send if the API calls SES directly. Avoid broader permissions.
+- worker-role (Worker Task Role): SES SendEmail/SendRawEmail, CloudWatch Logs write, SSM read (and kms:Decrypt if CMK). Add S3 read only if attachments/templates are stored there.
+- SNS Webhooks: Configure SNS → HTTPS subscription to `https://<api-domain>/events/sns`; restrict via WAF/ALB rules and/or implement SNS signature validation.
+
+## ECS deploy/run checklist
+1) Create ECR repository and push the image tag you want to run (ap-southeast-2).
+2) Create SSM Parameter Store (or Secrets Manager) entries in ap-southeast-2: `/email-delivery/DATABASE_URL`, `/email-delivery/REDIS_URL`, `/email-delivery/SES_SENDER_EMAIL` (and any others as needed).
+3) Create CloudWatch log groups: `/ecs/email-delivery-api`, `/ecs/email-delivery-worker` in ap-southeast-2.
+4) Register task definitions for API and worker from `deploy/ecs/taskdef-api.json` and `deploy/ecs/taskdef-worker.json` (update ARNs/placeholders first).
+5) Create ECS services: API behind an HTTPS ALB target group (port 8000); worker as a separate service without ALB.
+6) Wire SNS topics (delivery/bounce/complaint) to `https://<api-domain>/events/sns` and confirm the subscription.
+7) Run sandbox `/send/send-test` with `enqueue=true` and verify: email received, `email_logs` updated, SNS events received/logged.
 
 ## Observability and Operations
 - **Logging**: Configured via `src.utils.logger`. In ECS, ensure stdout/err ship to CloudWatch.

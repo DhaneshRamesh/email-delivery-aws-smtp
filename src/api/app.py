@@ -10,12 +10,18 @@ from src.api.routes import admin_tools, campaigns, domains, email_logs, events, 
 from src.core.config import settings
 from src.db import models
 from src.db.session import engine
-from src.utils.logger import configure_logging
+from src.utils.logger import configure_logging, logger
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # pragma: no cover - startup hook
     configure_logging()
+    if settings.environment == "development" and not (
+        settings.aws_access_key_id and settings.aws_secret_access_key
+    ):
+        logger.warning(
+            "No AWS credentials detected for local development. SES calls will fail unless credentials are provided via .env or AWS CLI."
+        )
     # Ensure tables exist for local development. Alembic should manage in production.
     models.Base.metadata.create_all(bind=engine)
     yield

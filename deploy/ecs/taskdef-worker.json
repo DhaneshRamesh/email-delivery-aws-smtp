@@ -1,0 +1,48 @@
+{
+  "family": "email-delivery-worker",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<account-id>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<account-id>:role/email-delivery-worker-role",
+  "containerDefinitions": [
+    {
+      "name": "worker",
+      "image": "<account-id>.dkr.ecr.ap-southeast-2.amazonaws.com/email-delivery:latest",
+      "command": [
+        "python",
+        "-m",
+        "src.queue.worker"
+      ],
+      "environment": [
+        { "name": "APP_NAME", "value": "CourierX" },
+        { "name": "ENVIRONMENT", "value": "production" },
+        { "name": "API_VERSION", "value": "v1" },
+        { "name": "AWS_REGION_NAME", "value": "ap-southeast-2" }
+      ],
+      "secrets": [
+        {
+          "name": "DATABASE_URL",
+          "valueFrom": "arn:aws:ssm:ap-southeast-2:123456789012:parameter/email-delivery/DATABASE_URL"
+        },
+        {
+          "name": "REDIS_URL",
+          "valueFrom": "arn:aws:ssm:ap-southeast-2:123456789012:parameter/email-delivery/REDIS_URL"
+        },
+        {
+          "name": "SES_SENDER_EMAIL",
+          "valueFrom": "arn:aws:ssm:ap-southeast-2:123456789012:parameter/email-delivery/SES_SENDER_EMAIL"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/email-delivery-worker",
+          "awslogs-region": "ap-southeast-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

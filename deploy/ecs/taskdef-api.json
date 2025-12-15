@@ -1,0 +1,59 @@
+{
+  "family": "email-delivery-api",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<account-id>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<account-id>:role/email-delivery-backend-role",
+  "containerDefinitions": [
+    {
+      "name": "api",
+      "image": "<account-id>.dkr.ecr.ap-southeast-2.amazonaws.com/email-delivery:latest",
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "command": [
+        "uvicorn",
+        "src.api.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000"
+      ],
+      "environment": [
+        { "name": "APP_NAME", "value": "CourierX" },
+        { "name": "ENVIRONMENT", "value": "production" },
+        { "name": "API_VERSION", "value": "v1" },
+        { "name": "AWS_REGION_NAME", "value": "ap-southeast-2" },
+        { "name": "ALLOWED_ORIGINS", "value": "https://app.example.com" },
+        { "name": "RATE_LIMIT_PER_MINUTE", "value": "120" }
+      ],
+      "secrets": [
+        {
+          "name": "DATABASE_URL",
+          "valueFrom": "arn:aws:ssm:ap-southeast-2:123456789012:parameter/email-delivery/DATABASE_URL"
+        },
+        {
+          "name": "REDIS_URL",
+          "valueFrom": "arn:aws:ssm:ap-southeast-2:123456789012:parameter/email-delivery/REDIS_URL"
+        },
+        {
+          "name": "SES_SENDER_EMAIL",
+          "valueFrom": "arn:aws:ssm:ap-southeast-2:123456789012:parameter/email-delivery/SES_SENDER_EMAIL"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/email-delivery-api",
+          "awslogs-region": "ap-southeast-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

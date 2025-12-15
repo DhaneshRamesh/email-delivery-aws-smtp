@@ -20,8 +20,8 @@ class Settings(BaseSettings):
     api_version: str = "v1"
     database_url: str = "postgresql+psycopg://user:password@host:5432/database"
     redis_url: str = "redis://localhost:6379/0"
-    aws_access_key_id: str = "AWS_ACCESS_KEY_ID_PLACEHOLDER"
-    aws_secret_access_key: str = "AWS_SECRET_ACCESS_KEY_PLACEHOLDER"
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
     aws_region_name: str = "us-east-1"
     ses_sender_email: str = "no-reply@example.com"
     allowed_origins: List[str] = ["http://localhost", "http://localhost:3000"]
