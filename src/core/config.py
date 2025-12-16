@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
-    aws_region_name: str = "us-east-1"
+    aws_region_name: str = "ap-southeast-2"
     ses_sender_email: str = "no-reply@example.com"
     allowed_origins: List[str] = ["http://localhost", "http://localhost:3000"]
     rate_limit_per_minute: int = 120
