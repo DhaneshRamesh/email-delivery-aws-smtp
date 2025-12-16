@@ -62,7 +62,7 @@ class SESService:
         client = self._client_or_raise()
         try:
             response = client.send_email(
-                Source=sender or settings.ses_sender_email,
+                Source="dhanesh@silverseven.com",
                 Destination={"ToAddresses": [recipient]},
                 Message={
                     "Subject": {"Data": subject},
