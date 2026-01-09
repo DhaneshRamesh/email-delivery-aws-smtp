@@ -5,8 +5,11 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from src.api.routes import events
 from src.core.config import settings
@@ -15,7 +18,12 @@ from src.utils import sns as sns_utils
 
 
 def _make_db_session():
-    engine = create_engine("sqlite:///:memory:", future=True)
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     models.Base.metadata.create_all(bind=engine)
     SessionLocal = sessionmaker(bind=engine)
     return SessionLocal()
@@ -33,6 +41,11 @@ def _notification_payload(message: dict) -> dict:
     }
 
 
+def _configure_sns(monkeypatch, *, topic_arn: str = "arn:aws:sns:ap-southeast-2:123456789012:ses-events") -> None:
+    monkeypatch.setattr(settings, "sns_verify_signatures", False)
+    monkeypatch.setattr(settings, "sns_allowed_topic_arns", [topic_arn])
+
+
 def test_verify_sns_signature_happy(monkeypatch):
     payload = _notification_payload({"notificationType": "Delivery", "mail": {"messageId": "mid"}})
 
@@ -42,7 +55,9 @@ def test_verify_sns_signature_happy(monkeypatch):
     def fake_run(args, input_bytes, timeout_seconds):  # noqa: ARG001
         if "x509" in args:
             return SimpleNamespace(returncode=0, stdout=b"PUBKEY")
-        return SimpleNamespace(returncode=0, stdout=b"")
+        if "dgst" in args:
+            return SimpleNamespace(returncode=0, stdout=b"")
+        return SimpleNamespace(returncode=1, stdout=b"")
 
     monkeypatch.setattr(sns_utils, "_fetch_url", fake_fetch)
     monkeypatch.setattr(sns_utils, "_run_openssl", fake_run)
@@ -57,6 +72,10 @@ def test_verify_sns_signature_fail(monkeypatch):
         return b"cert"
 
     def fake_run(args, input_bytes, timeout_seconds):  # noqa: ARG001
+        if "x509" in args:
+            return SimpleNamespace(returncode=0, stdout=b"PUBKEY")
+        if "dgst" in args:
+            return SimpleNamespace(returncode=1, stdout=b"")
         return SimpleNamespace(returncode=1, stdout=b"")
 
     monkeypatch.setattr(sns_utils, "_fetch_url", fake_fetch)
@@ -72,10 +91,7 @@ def test_subscription_confirmation(monkeypatch):
         return True
 
     monkeypatch.setattr(events, "confirm_subscription", fake_confirm)
-    monkeypatch.setattr(settings, "sns_verify_signatures", False)
-    monkeypatch.setattr(
-        settings, "sns_allowed_topic_arns", ["arn:aws:sns:ap-southeast-2:123456789012:ses-events"]
-    )
+    _configure_sns(monkeypatch)
 
     payload = {
         "Type": "SubscriptionConfirmation",
@@ -97,10 +113,7 @@ def test_notification_updates_email_log(monkeypatch):
     db.add(log)
     db.commit()
 
-    monkeypatch.setattr(settings, "sns_verify_signatures", False)
-    monkeypatch.setattr(
-        settings, "sns_allowed_topic_arns", ["arn:aws:sns:ap-southeast-2:123456789012:ses-events"]
-    )
+    _configure_sns(monkeypatch)
 
     message = {
         "notificationType": "Delivery",
@@ -122,10 +135,7 @@ def test_notification_updates_email_log(monkeypatch):
 
 def test_event_persisted_without_log(monkeypatch):
     db = _make_db_session()
-    monkeypatch.setattr(settings, "sns_verify_signatures", False)
-    monkeypatch.setattr(
-        settings, "sns_allowed_topic_arns", ["arn:aws:sns:ap-southeast-2:123456789012:ses-events"]
-    )
+    _configure_sns(monkeypatch)
 
     message = {
         "notificationType": "Bounce",
@@ -138,3 +148,21 @@ def test_event_persisted_without_log(monkeypatch):
     event = db.query(models.EmailEvent).first()
     assert event is not None
     assert event.email_log_id is None
+
+
+def test_topic_arn_not_allowed(monkeypatch):
+    db = _make_db_session()
+    _configure_sns(monkeypatch, topic_arn="arn:aws:sns:ap-southeast-2:123456789012:allowed")
+
+    message = {
+        "notificationType": "Delivery",
+        "mail": {"messageId": "ses-message-id"},
+        "delivery": {"timestamp": "2025-12-16T00:00:00.000Z", "smtpResponse": "250 Ok"},
+    }
+    payload = _notification_payload(message)
+    payload["TopicArn"] = "arn:aws:sns:ap-southeast-2:123456789012:blocked"
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(events.handle_sns_notification(payload, db=db))
+    assert excinfo.value.status_code == 403
+    assert db.query(models.EmailEvent).count() == 0

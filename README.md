@@ -162,11 +162,31 @@ alembic upgrade head
 - Status: confirmed working against Neon (PostgresqlImpl) with all revisions applied and tables present.
 
 ## Running the Stack
-- **API**: `uvicorn src.api.app:app --reload`
-- **Worker**: `python -m src.queue.worker` (requires Redis reachable at `REDIS_URL`)
+- **API**: `uvicorn src.api.app:app --host 0.0.0.0 --port 8000`
+- **Streamlit UI (internal)**: `streamlit run src/internal_ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501`
+- **Streamlit API base**: set `API_BASE_URL` (default `http://127.0.0.1:8000`)
+- **Worker (recommended)**: `python -m src.queue.run_worker`
+- **Worker (raw rq)**: `rq worker --url redis://127.0.0.1:6379/0 emails`
 - **Scheduler** (optional): `python -m src.queue.scheduler`
 - **Health**: `GET /health`
 - **Docs**: `GET /docs` (Swagger UI) or `/redoc`
+
+Quick curl checks:
+- Health: `curl http://localhost:8000/health`
+- Direct send: `curl -X POST http://localhost:8000/send/send-test -H "Content-Type: application/json" -d '{"recipient":"success@simulator.amazonses.com","subject":"Test","body":"Hello","enqueue":false}'`
+- Queued send: `curl -X POST http://localhost:8000/send/send-test -H "Content-Type: application/json" -d '{"recipient":"success@simulator.amazonses.com","subject":"Test","body":"Hello","enqueue":true}'`
+
+Troubleshooting:
+- If queued jobs never run, your worker is likely listening on the default queue. Ensure it listens on `emails`.
+- Streamlit is for internal use only; restrict access via security group or IP allowlist.
+
+Streamlit run examples:
+- EC2-only (API + UI on same instance):
+  - API: `uvicorn src.api.app:app --host 0.0.0.0 --port 8000`
+  - UI: `streamlit run src/internal_ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501`
+- Mac UI + EC2 API:
+  - `API_BASE_URL=http://<EC2_PUBLIC_IP>:8000 streamlit run src/internal_ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501`
+- Security Group: allow inbound TCP 8000 (API) and 8501 (Streamlit), restricted to your IP.
 
 ## Queues and Background Jobs
 - **Single send**: `/send/send-test` can enqueue if `"enqueue": true`; worker executes `process_email_job`.

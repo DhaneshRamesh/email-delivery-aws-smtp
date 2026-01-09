@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     environment: str = "development"
     api_version: str = "v1"
     database_url: str = "postgresql+psycopg://user:password@host:5432/database"
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    rq_queue_name: str = "emails"
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     aws_region_name: str = "ap-southeast-2"
