@@ -13,10 +13,11 @@ router = APIRouter(prefix="/email-logs", tags=["email-logs"])
 
 class EmailLogResponse(BaseModel):
     id: int
-    tenant_id: int
+    tenant_id: int | None = None
     campaign_id: int | None = None
     subscriber_id: int | None = None
-    message_id: str
+    recipient_email: str | None = None
+    message_id: str | None = None
     status: str
 
     class Config:

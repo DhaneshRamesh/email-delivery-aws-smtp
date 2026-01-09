@@ -61,17 +61,20 @@ class SESService:
 
         client = self._client_or_raise()
         try:
-            response = client.send_email(
-                Source="dhanesh@silverseven.com",
-                Destination={"ToAddresses": [recipient]},
-                Message={
+            request = {
+                "Source": "dhanesh@silverseven.com",
+                "Destination": {"ToAddresses": [recipient]},
+                "Message": {
                     "Subject": {"Data": subject},
                     "Body": {
                         "Text": {"Data": text_body},
                         "Html": {"Data": html_body or text_body},
                     },
                 },
-            )
+            }
+            if settings.ses_configuration_set:
+                request["ConfigurationSetName"] = settings.ses_configuration_set
+            response = client.send_email(**request)
         except (BotoCoreError, ClientError) as exc:  # pragma: no cover - network service
             logger.exception("Failed to send email via SES")
             raise RuntimeError("SES send_email failed") from exc

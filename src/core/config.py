@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     aws_region_name: str = "ap-southeast-2"
+    ses_configuration_set: str | None = None
+    sns_allowed_topic_arns: List[str] = []
+    sns_verify_signatures: bool = True
+    sns_skip_signature_verification: bool = False
+    sns_signature_timeout_seconds: int = 5
     ses_sender_email: str = "no-reply@example.com"
     allowed_origins: List[str] = ["http://localhost", "http://localhost:3000"]
     rate_limit_per_minute: int = 120
@@ -43,6 +48,14 @@ class Settings(BaseSettings):
         """Allow comma separated origins in env files."""
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @field_validator("sns_allowed_topic_arns", mode="before")
+    @classmethod
+    def split_topic_arns(cls, value: str | List[str]) -> List[str]:
+        """Allow comma separated SNS topic ARNs in env files."""
+        if isinstance(value, str):
+            return [arn.strip() for arn in value.split(",") if arn.strip()]
         return value
 
     @field_validator("ses_sender_email")

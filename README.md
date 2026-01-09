@@ -71,7 +71,12 @@ Copy `.env.example` to `.env` and set:
 - `DATABASE_URL` – required; e.g., your Neon URL `postgresql+psycopg://...` (quoted values are stripped automatically; keep `sslmode=require`)
 - `REDIS_URL` – e.g., `redis://localhost:6379/0` or ElastiCache endpoint
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` – optional for local dev; omit in ECS/Lambda when using IAM roles
-- `AWS_REGION_NAME` – required region for SES (e.g., `us-east-1`)
+- `AWS_REGION_NAME` – required region for SES (e.g., `ap-southeast-2`)
+- `SES_CONFIGURATION_SET` – optional SES configuration set name for event publishing
+- `SNS_ALLOWED_TOPIC_ARNS` – comma-separated list of allowed SNS topic ARNs for `/events/sns`
+- `SNS_VERIFY_SIGNATURES` – enable SNS signature verification (default true)
+- `SNS_SKIP_SIGNATURE_VERIFICATION` – allow skipping verification in development only
+- `SNS_SIGNATURE_TIMEOUT_SECONDS` – timeout for SNS cert fetch and confirmation
 - `SES_SENDER_EMAIL` – verified sender in SES (e.g., `no-reply@chachamailer.com`)
 - `ALLOWED_ORIGINS` – comma-separated CORS origins
 - `RATE_LIMIT_PER_MINUTE` – simple in-memory rate limit for the send-test endpoint
@@ -170,16 +175,18 @@ alembic upgrade head
 - End-to-end verified: queued send-test returns a job ID and the running worker processes it successfully via SES (sandbox rules apply).
 
 ## API Surface
-- Tenants: `POST/GET/LIST/PATCH/DELETE /tenants`
-- Campaigns: CRUD at `/campaigns`; send/schedule/cancel/preview via `/campaigns/{id}/...`
-- Subscribers: CRUD + bulk import CSV at `/subscribers/bulk-import`
-- Suppression: `POST/GET/DELETE /suppression`
-- Domains: request verification, mark verified, status at `/domains/...`
-- Email logs: `GET /email-logs/`, `GET /email-logs/campaign/{id}`, `GET /email-logs/{id}`
-- Admin tools: manual campaign run/enqueue at `/admin/...`
-- Events: `POST /events/sns` for SES→SNS webhooks
-- Send test: `POST /send/send-test`
+- Base URL (local dev): `http://localhost:8000`
+- Base URL (EC2 sandbox): `http://3.25.176.145:8000`
 - Health: `GET /health`
+- Tenants: `POST /tenants`, `GET /tenants`, `GET /tenants/{id}`, `PATCH /tenants/{id}`, `DELETE /tenants/{id}`
+- Domains: `GET /domains/status`, `POST /domains/request-verification`, `PATCH /domains/mark-verified`
+- Subscribers: `POST /subscribers`, `GET /subscribers`, `GET /subscribers/{id}`, `PATCH /subscribers/{id}`, `DELETE /subscribers/{id}`, `POST /subscribers/bulk-import`
+- Campaigns: `POST /campaigns`, `GET /campaigns`, `GET /campaigns/{id}`, `PATCH /campaigns/{id}`, `DELETE /campaigns/{id}`, `POST /campaigns/{id}/send-now`, `POST /campaigns/{id}/schedule`, `POST /campaigns/{id}/cancel-schedule`, `GET /campaigns/{id}/preview`
+- Send: `POST /send/send-test` (optionally enqueues to worker)
+- Suppression: `POST /suppression`, `GET /suppression`, `DELETE /suppression/{id}`
+- Email logs: `GET /email-logs`, `GET /email-logs/campaign/{id}`, `GET /email-logs/{id}`
+- Admin tools: `POST /admin/run-campaign/{id}`, `POST /admin/enqueue-campaign/{id}`
+- Events/SNS: `POST /events/sns` for SES→SNS webhooks
 
 ## Email Flow
 1. Client calls `/send/send-test` or campaign send endpoints.
@@ -210,6 +217,38 @@ alembic upgrade head
 - SES should publish to SNS; configure SNS subscription to your `/events/sns` endpoint.
 - Handler parses SNS payload, maps `notificationType` to statuses (bounce/complaint/delivered default), and updates `EmailLog` by `message_id`.
 - If a log is not found, a warning is logged.
+
+## SES/SNS Delivery Tracking
+- Set `SES_CONFIGURATION_SET` so SES emits delivery/bounce/complaint events for every send.
+- Configure SNS topics (delivery/bounce/complaint) to send to `POST /events/sns`, and set `SNS_ALLOWED_TOPIC_ARNS` to the topic ARNs (comma-separated). In non-dev environments, an empty allowlist rejects all SNS events.
+- Signature verification is enabled by default (`SNS_VERIFY_SIGNATURES=true`). In local dev only, you can set `SNS_SKIP_SIGNATURE_VERIFICATION=true` to bypass verification.
+- SES Mailbox Simulator addresses for testing:
+  - `success@simulator.amazonses.com`
+  - `bounce@simulator.amazonses.com`
+  - `complaint@simulator.amazonses.com`
+
+## Example End-to-End Flow
+1) API enqueues a send (`POST /send/send-test` with `enqueue=true`).
+2) An `EmailLog` row is created with `status=queued` and `recipient_email`.
+3) Worker sends via SES and updates `EmailLog.message_id` to the SES MessageId.
+4) SNS posts a delivery/bounce/complaint notification to `/events/sns`.
+5) The webhook verifies the signature, persists an `EmailEvent`, updates `EmailLog.status`, and (for bounce/complaint) suppresses future sends.
+
+Sample SNS Notification (redacted):
+```json
+{
+  "Type": "Notification",
+  "MessageId": "11111111-2222-3333-4444-555555555555",
+  "TopicArn": "arn:aws:sns:ap-southeast-2:123456789012:ses-delivery",
+  "Message": "{\"notificationType\":\"Delivery\",\"mail\":{\"messageId\":\"010101010101\",\"destination\":[\"success@simulator.amazonses.com\"]},\"delivery\":{\"timestamp\":\"2025-12-16T06:40:00.000Z\",\"smtpResponse\":\"250 Ok\"}}"
+}
+```
+
+Sample DB updates:
+- `email_logs.message_id` = `010101010101`
+- `email_logs.status` = `delivered`
+- `email_logs.last_event_type` = `delivery`
+- `email_events.event_type` = `delivery` (payload stored)
 
 ## Container Image
 Build and run locally:

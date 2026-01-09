@@ -38,19 +38,22 @@ def load_recipients(db: Session, tenant_id: int) -> list[models.Subscriber]:
 def enqueue_bulk_emails(db: Session, campaign: models.Campaign, subscribers: Iterable[models.Subscriber]) -> int:
     enqueued = 0
     for subscriber in subscribers:
-        job = enqueue_email_job(
-            subject=campaign.subject,
-            recipient=subscriber.email,
-            body=campaign.body,
-        )
         email_log = models.EmailLog(
             tenant_id=campaign.tenant_id,
             campaign_id=campaign.id,
             subscriber_id=subscriber.id,
-            message_id=job.id,
             status="queued",
+            recipient_email=subscriber.email,
         )
         db.add(email_log)
+        db.flush()
+        job = enqueue_email_job(
+            subject=campaign.subject,
+            recipient=subscriber.email,
+            body=campaign.body,
+            email_log_id=email_log.id,
+        )
+        email_log.provider_job_id = job.id
         enqueued += 1
     logger.info("Campaign %s enqueued %s messages", campaign.id, enqueued)
     return enqueued

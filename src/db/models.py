@@ -1,11 +1,10 @@
 """Database models for the email delivery platform."""
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import declarative_base, relationship
 
+from src.utils.datetime import utcnow
 Base = declarative_base()
 
 
@@ -57,15 +56,41 @@ class EmailLog(Base):
     __tablename__ = "email_logs"
 
     id = Column(Integer, primary_key=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=True)
     subscriber_id = Column(Integer, ForeignKey("subscribers.id"), nullable=True)
-    message_id = Column(String(255), nullable=False)
+    recipient_email = Column(String(320), nullable=True, index=True)
+    message_id = Column(String(255), nullable=True, index=True)
+    provider_job_id = Column(String(255), nullable=True, index=True)
     status = Column(String(50), default="queued")
-    sent_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    last_event_type = Column(String(50), nullable=True)
+    last_event_at = Column(DateTime(timezone=True), nullable=True)
+    last_smtp_response = Column(String(1024), nullable=True)
+    bounce_type = Column(String(255), nullable=True)
+    bounce_subtype = Column(String(255), nullable=True)
+    complaint_type = Column(String(255), nullable=True)
+    sent_at = Column(DateTime(timezone=True), default=utcnow)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     campaign = relationship("Campaign", back_populates="email_logs")
+    events = relationship("EmailEvent", back_populates="email_log", cascade="all, delete-orphan")
+
+
+class EmailEvent(Base):
+    __tablename__ = "email_events"
+
+    id = Column(Integer, primary_key=True)
+    email_log_id = Column(Integer, ForeignKey("email_logs.id"), nullable=True, index=True)
+    ses_message_id = Column(String(255), nullable=True, index=True)
+    sns_message_id = Column(String(255), nullable=True, index=True)
+    event_type = Column(String(50), nullable=False)
+    topic_arn = Column(String(512), nullable=True)
+    received_at = Column(DateTime(timezone=True), server_default=func.now())
+    payload_json = Column(Text, nullable=False)
+    signature_verified = Column(Boolean, default=False)
+
+    email_log = relationship("EmailLog", back_populates="events")
 
 
 class SuppressedEmail(Base):

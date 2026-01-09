@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timezone
 from typing import Any
 
 try:  # pragma: no cover - optional dependency import
@@ -16,6 +17,8 @@ except ImportError:  # pragma: no cover
     Connection = Queue = Worker = None  # type: ignore
 
 from src.core.config import settings
+from src.db import models
+from src.db.session import session_scope
 from src.services.ses import SESService
 from src.utils.logger import logger
 
@@ -38,22 +41,53 @@ def _get_queue() -> Any:
     return _email_queue
 
 
-def process_email_job(*, subject: str, recipient: str, body: str) -> str:
+def _mark_log_sent(email_log_id: int, message_id: str) -> None:
+    with session_scope() as db:
+        log = db.query(models.EmailLog).filter(models.EmailLog.id == email_log_id).first()
+        if not log:
+            logger.warning("EmailLog not found for id=%s after send", email_log_id)
+            return
+        log.message_id = message_id
+        log.status = "sent"
+        log.last_event_type = "send"
+        log.last_event_at = datetime.now(timezone.utc)
+        db.add(log)
+
+def _mark_log_failed(email_log_id: int, error_message: str) -> None:
+    with session_scope() as db:
+        log = db.query(models.EmailLog).filter(models.EmailLog.id == email_log_id).first()
+        if not log:
+            logger.warning("EmailLog not found for id=%s after failure", email_log_id)
+            return
+        log.status = "failed"
+        log.last_event_type = "send_failed"
+        log.last_event_at = datetime.now(timezone.utc)
+        log.last_smtp_response = error_message[:1024]
+        db.add(log)
+
+def process_email_job(*, subject: str, recipient: str, body: str, email_log_id: int | None = None) -> str:
     """Background job that sends an email."""
 
     service = SESService()
-    message_id = service.send_email(subject=subject, recipient=recipient, text_body=body)
-    logger.info("Processed queued email to %s", recipient)
-    return message_id
+    try:
+        message_id = service.send_email(subject=subject, recipient=recipient, text_body=body)
+        if email_log_id is not None:
+            _mark_log_sent(email_log_id, message_id)
+        logger.info("Processed queued email to %s", recipient)
+        return message_id
+    except Exception as exc:
+        if email_log_id is not None:
+            _mark_log_failed(email_log_id, str(exc))
+        raise
 
 
-def enqueue_email_job(*, subject: str, recipient: str, body: str):
+def enqueue_email_job(*, subject: str, recipient: str, body: str, email_log_id: int | None = None):
     """Helper for API routes to enqueue jobs."""
 
     queue = _get_queue()
     return queue.enqueue(
         process_email_job,
-        kwargs={"subject": subject, "recipient": recipient, "body": body},
+        kwargs={"subject": subject, "recipient": recipient, "body": body, "email_log_id": email_log_id},
     )
 
 
